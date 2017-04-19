@@ -1,4 +1,4 @@
-from utils import connections, isAdmin, bot_regexes, timesince
+from app.utils.lib import connections, isAdmin, bot_regexes, timesince
 
 def handle_ERROR(irc, args):
     irc.connected = False

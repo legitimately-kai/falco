@@ -1,4 +1,4 @@
-from utils import parse_modes, doOpStuff, chanmodes
+from app.utils.lib import parse_modes, doOpStuff, chanmodes
 
 def handle_MODE(irc, args):
     # falco

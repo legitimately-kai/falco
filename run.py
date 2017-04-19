@@ -1,23 +1,22 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
-import glob
-import os
-import socket
-import time
-import sys
+
+
+import socket, glob, sys, re, os, time, imp
 import json
 import threading
+import subprocess
 import traceback
 import concurrent.futures
 from ssl import wrap_socket
-from log import log
-import utils
-import hooks
-import imp
+from app.logs.log import log
+
+import app.utils.lib as utils       
+from app import hooks
 
 def reload_plugins(init=False):
-    plugins_folder = [os.path.join(os.getcwd(), 'plugins')]
-    plugins = set(glob.glob(os.path.join("plugins", "*.py")))
+    plugins_folder = [os.path.join(os.getcwd(), 'app/plugins')]
+    plugins = set(glob.glob(os.path.join(os.getcwd() + "app/plugins", "*.py")))
     for plugin in plugins:
         _plugin = os.path.join(os.getcwd(), plugin)
         mtime = os.stat(_plugin).st_mtime
@@ -55,55 +54,56 @@ def reload_config():
             irc.conf = conf["servers"][irc.netname]
             irc.reloadConfig()
             log.debug("(%s) Reloaded config", irc.netname)
-
+            
 def connectall():
     for server in utils.connections.values():
         log.info("Starting %s connection thread" % server.name)
         server.daemon = True
         server.start()
-
+        
 mtimes = dict()
-
+        
 class IRC(threading.Thread):
-
+    
     def __init__(self, conf, config_file):
-        threading.Thread.__init__(self)
-        self.data_dir = "data" + os.path.sep
+        threading.Thread.__init__(self) 
+        self.data_dir = "app/data" + os.path.sep
         os.makedirs(self.data_dir, exist_ok=True)
         self.conf = conf
         self.conf_mtime = os.stat(config_file).st_mtime
+        self.address = self.conf["address"]
+        self.port = self.conf["port"]
         self.netname = self.conf["netname"]
+        self.ssl = self.conf["ssl"]
         self.name = self.netname
+        self.autojoin = self.conf["autojoin"]
+        self.nick = self.conf["nick"]
+        self.gecos = self.conf["gecos"]
+        self.user = self.conf["ident"]
+        self.password = self.conf["password"]
+        self.setmodes = self.conf["modes"]
+        self.modes = []
+        self.prefixmodes = {'q': '~', 'a': '&', 'v': '+', 'o': '@', 'h': '%'}
+        self.connected = False
+        self.enabled = False
+        self.ver = "v0.0.8"
         self.rx = 0
         self.tx = 0
         self.txmsgs = 0
         self.rxmsgs = 0
-        self.started = 0
-        self.server = self.conf["server"]
-        self.port = self.conf["port"]
-        self.ssl = self.conf["ssl"]
-        self.nick = self.conf["nick"]
-        self.user = self.conf["ident"]
-        self.gecos = self.conf["gecos"]
-        self.autojoin = self.conf["autojoin"]
-        self.setmodes = self.conf["modes"]
-        self.password = "6675636b796f75"
-        self.prefixmodes = {'q': '~', 'a': '&', 'v': '+', 'o': '@', 'h': '%'}
-        self.connected = False
+        self.cap = []
+        self.capdone = False
         self.chanmodes = {}
-        self.modes = []
         self.hasink = True
         self.color = 14
         self.buffermaxlen = 16003
         self.identified = False
-        self.cap = []
-        self.capdone = False
-
+        
         self.users = {}
         self.chans = {}
-
+        
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
+        
         try:
             self.nicks = json.load(open(self.data_dir + "{}-nicks.json".format(self.netname)))
             self.channels = json.load(open(self.data_dir + "{}-channels.json".format(self.netname)))
@@ -112,16 +112,14 @@ class IRC(threading.Thread):
             self.nicks = {}
         except json.decoder.JSONDecodeError as e:
             sys.exit("{} - {}".format(e, self.netname))
-
+            
         self.reloadConfig()
 
     def reloadConfig(self):
-        self.reply = self.conf["reply"]
         self.prefix = self.conf["prefix"]
         self.admins = self.conf["admins"]
-        self.ops = self.conf["ops"]
         self.ignored = self.conf["ignored"]
-
+        
     def get_channel(self, channelname):
         if channelname not in self.chans.keys():
             self.chans[channelname] = utils.Channel(self, channelname)
@@ -132,7 +130,29 @@ class IRC(threading.Thread):
             return self.users[nickname]
         else:
             return utils.User("", "", "", "")
+            
+    def connect(self):
+        self.ibuffer = ""
+        self.cap = []
+        self.capdone = False
+        self.started = time.time()
+        log.info("(%s) Attempting to connect to %s/%s as %s",
+                  self.netname, self.address, self.port, self.nick)
+    
+        self.socket = socket.create_connection((self.address, self.port))
+        if self.ssl:
+            self.socket = wrap_socket(self.socket)
 
+        self.send("CAP LS")
+
+        if self.conf.get("password"):
+            self.send("PASS {}".format(self.conf["password"]))
+
+        self.send("USER {} 0 * :{}".format(self.user, self.gecos))
+        self.send("NICK {}".format(self.nick))
+        self.connected = True
+        log.debug("(%s) Running main loop", self.netname)
+            
     def run(self, override=False):
 
         if not self.conf.get("active", False) and not override:
@@ -152,12 +172,14 @@ class IRC(threading.Thread):
 
                 self.rx += len(line)
                 self.rxmsgs += 1
-
+                #print("Line: ", line)
+                
                 parsed = utils.parseArgs(line)
+                #print(parsed.args)
 
                 try:
                     for hook in utils.command_hooks[parsed.type]:
-                        # log.info("(%s) Calling handle %r with args %r", self.netname, hook.__name__, parsed.args)
+                        #log.info("(%s) Calling handle %r with args %r", self.netname, hook.__name__, parsed.args)
                         hook(self, parsed)
                 except TypeError as e:
                     log.warn("(%s) %s for %r", self.netname, e, hook)
@@ -165,16 +187,7 @@ class IRC(threading.Thread):
                 except:
                     traceback.print_exc()
                     pass
-
-    def msg(self, target, message, reply=None):
-        time.sleep(0.3)
-
-        if self.hasink:
-            self.send("{} {} :\x03{}│\x0f {}".format(reply or self.reply, target, self.color, message))
-            return
-
-        self.send("{} {} :{}".format(reply, target, message))
-
+                    
     def send(self, data):
         data = data.replace('\n', ' ').replace("\a", "")
         data = data.encode("utf-8") + b"\r\n"
@@ -190,29 +203,7 @@ class IRC(threading.Thread):
         except AttributeError:
             log.warn("(%s) Dropping message %r; network isn't connected!", self.netname, stripped_data)
             self.connected = False
-
-    def connect(self):
-        self.ibuffer = ""
-        self.cap = []
-        self.capdone = False
-        self.started = time.time()
-        log.info("(%s) Attempting to connect to %s/%s as %s",
-                  self.netname, self.server, self.port, self.nick)
-    
-        self.socket = socket.create_connection((self.server, self.port))
-        if self.ssl:
-            self.socket = wrap_socket(self.socket)
-
-        self.send("CAP LS")
-
-        if self.conf.get("password"):
-            self.send("PASS {}".format(self.conf["password"]))
-
-        self.send("USER {} 0 * :{}".format(self.user, self.gecos))
-        self.send("NICK {}".format(self.nick))
-        self.connected = True
-        log.debug("(%s) Running main loop", self.netname)
-
+            
     def disconnect(self, quit=None, terminate=True):
         self.send("QUIT :{}".format("Goodbye" if not quit else quit))
         self.connected = False
@@ -227,13 +218,24 @@ class IRC(threading.Thread):
         self.socket.close()
         self.connected = False
         self.run()
+        
+    def msg(self, target, message, reply=None):
+        time.sleep(0.3)
 
+        if self.hasink:
+            self.send("{} {} :\x03{}│\x0f {}".format(reply or self.reply, target, self.color, message))
+            return
+
+        self.send("{} {} :{}".format(reply, target, message))
+ 
+                    
 if __name__ == "__main__":
 
-    log.info("Starting falco (%s)", utils.bot_version())
+    log.info("Starting Kybot")
 
     try:
-        config_file = sys.argv[1]
+    
+        config_file = "app/configs/config.json"
         global conf
 
         with open(config_file, 'r') as f:
@@ -252,6 +254,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     utils.api_keys = conf["api_keys"]
+    reload_plugins(init=True)
 
     for server in conf["servers"].values():
         utils.connections[server["netname"]] = IRC(server, config_file)
@@ -269,3 +272,6 @@ if __name__ == "__main__":
             for server in utils.connections.values():
                 server.disconnect("CTRL-C at console", terminate=False)
             sys.exit()
+
+
+        

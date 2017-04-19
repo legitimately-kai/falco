@@ -1,6 +1,6 @@
 import re, time, threading, fnmatch
-from utils import isAdmin, isOp, bot_regexes, bot_commands
-from log import log
+from app.utils.lib import isAdmin, isOp, bot_regexes, bot_commands
+from app.logs.log import log
 
 def handle_NOTICE(irc, args):
     chan, text = args.args

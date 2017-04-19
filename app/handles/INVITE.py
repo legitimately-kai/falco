@@ -1,4 +1,4 @@
-import utils
+import app.utils.lib as utils
 
 def handle_INVITE(irc, args):
     if utils.isAdmin(irc, args.sender):

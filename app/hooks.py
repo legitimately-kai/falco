@@ -1,5 +1,5 @@
-import utils
-from handles import *
+import app.utils.lib as utils
+from app.handles import *
 
 def check_reminders(irc, args):
     nick = args.sender.nick

@@ -1,6 +1,6 @@
 import random, time
-from utils import parse_modes, getNewNick, chanmodes, check_mask, User
-from log import log
+from app.utils.lib import parse_modes, getNewNick, chanmodes, check_mask, User
+from app.logs.log import log
 import re
 
 def handle_001(irc, args):
@@ -48,7 +48,7 @@ def handle_251(irc, args):
     # ['falco-dev', 'There are 1 users and 1 invisible on 1 servers']
     irc.send("MODE {} {}".format(irc.nick, irc.setmodes))
     irc.send("WHOIS {}".format(irc.nick))
-    # for chan in irc.autojoin:
+    # for chan in irc.channels:
     #    irc.send("JOIN {}".format(chan))
 
 def handle_311(irc, args):
